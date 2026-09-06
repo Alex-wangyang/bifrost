@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,9 @@ type stickyKeyPlan struct {
 	current  schemas.Key
 	casReady bool
 	rotate   bool
+	// Deferred to keyProvider so the retry engine maps rejected pools to the
+	// same 503/no_eligible_keys response for ordinary and streaming requests.
+	selectionErr error
 }
 
 // buildStickyQuotaKey uses a dedicated namespace. Legacy session stickiness
@@ -247,6 +251,35 @@ func (bifrost *Bifrost) buildStickyKeyPlan(ctx *schemas.BifrostContext, requestT
 	if len(pool) < 2 {
 		return nil, false, nil
 	}
+	if bifrost.keyPoolFilter != nil {
+		// Filter before both cached-binding lookup and initial selection. Keep
+		// the captured keys canonical even if the hook edits its input slice.
+		filtered, filterErr := bifrost.keyPoolFilter(ctx, providerKey, model, append([]schemas.Key(nil), pool...))
+		if filterErr != nil {
+			// Match normal initial selection's fail-open handling. Quota
+			// migration still keeps the current key when its filter fails.
+			bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", providerKey, filterErr)
+		} else {
+			canonical := make([]schemas.Key, 0, len(filtered))
+			seen := make(map[string]bool, len(filtered))
+			for _, key := range filtered {
+				original, valid := stickyKeyByID(key.ID, pool)
+				if !valid {
+					return &stickyKeyPlan{selectionErr: fmt.Errorf("%w: provider %s", errAllKeysFiltered, providerKey)}, true, nil
+				}
+				if !seen[key.ID] {
+					canonical = append(canonical, original)
+					seen[key.ID] = true
+				}
+			}
+			if len(canonical) == 0 {
+				return &stickyKeyPlan{selectionErr: fmt.Errorf("%w: provider %s", errAllKeysFiltered, providerKey)}, true, nil
+			}
+			// Keep a one-key filtered plan handled: falling back to the legacy
+			// selector would rebuild an unfiltered pool and undo the veto.
+			pool = canonical
+		}
+	}
 
 	ttl, _ := ctx.Value(schemas.BifrostContextKeySessionTTL).(time.Duration)
 	if ttl <= 0 {
@@ -399,6 +432,9 @@ func (p *stickyKeyPlan) keyProvider() func(map[string]bool, map[string]bool) (sc
 	return func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
+		if p.selectionErr != nil {
+			return schemas.Key{}, p.selectionErr
+		}
 		if deadKeyIDs != nil && deadKeyIDs[p.current.ID] {
 			return schemas.Key{}, errAllKeysDead
 		}

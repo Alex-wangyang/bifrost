@@ -191,7 +191,10 @@ func TestStoreDelegateAttachConcurrentWithCAS(t *testing.T) {
 	close(start)
 	for i := 0; i < 1000; i++ {
 		store.SupportsProcessLocalCAS()
-		store.CompareAndSwapStringWithTTL("binding", "a", "a", time.Hour)
+		// Delegate attachment may reject CAS; other errors are unexpected.
+		if _, err := store.CompareAndSwapStringWithTTL("binding", "a", "a", time.Hour); err != nil && !errors.Is(err, ErrConditionalUnsupported) {
+			t.Errorf("unexpected CAS error during delegate attachment: %v", err)
+		}
 	}
 	<-done
 	store.SetDelegate(testSyncDelegate{})

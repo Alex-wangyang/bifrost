@@ -503,6 +503,118 @@ func TestStickyQuotaRetryStrictNegatives(t *testing.T) {
 	}
 }
 
+func TestChatCompletionStickyInitialFilterRejectsWithServiceUnavailable(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("an empty filtered pool must not contact an upstream")
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			t.Cleanup(server.Close)
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 8, server.URL)
+			account.SetKeysForProvider(schemas.OpenAI, stickyTestKeys())
+			bf, err := Init(context.Background(), schemas.BifrostConfig{
+				Account: account, KVStore: newStickyTestKVStore(), EnableStickyKeyQuotaFailover: true,
+				KeyPoolFilter: func(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, _ []schemas.Key) ([]schemas.Key, error) {
+					return nil, nil
+				},
+				Logger: NewDefaultLogger(schemas.LogLevelError),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(bf.Shutdown)
+			request := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI, Model: "gpt-4",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+			}
+			var be *schemas.BifrostError
+			if stream {
+				ch, streamErr := bf.ChatCompletionStreamRequest(stickyTestContext(), request)
+				be = streamErr
+				if ch != nil {
+					for range ch {
+					}
+					t.Error("rejected key selection must not start a stream")
+				}
+			} else {
+				_, be = bf.ChatCompletionRequest(stickyTestContext(), request)
+			}
+			if be == nil || be.StatusCode == nil || *be.StatusCode != 503 || be.Type == nil || *be.Type != "no_eligible_keys" {
+				t.Fatalf("expected 503/no_eligible_keys from filtered key selection, got %v", be)
+			}
+		})
+	}
+}
+
+func TestStickyKeyPlanInitialFilter(t *testing.T) {
+	for _, seed := range []string{"fresh", "legacy", "dedicated"} {
+		for _, mode := range []string{"veto", "empty", "error", "foreign", "modified"} {
+			t.Run(seed+"/"+mode, func(t *testing.T) {
+				store := newStickyTestKVStore()
+				binding := ""
+				if seed == "legacy" {
+					binding = buildSessionKey(schemas.OpenAI, "session-1", "gpt-4")
+				} else if seed == "dedicated" {
+					binding = buildStickyQuotaKey(schemas.OpenAI, "session-1", "gpt-4")
+				}
+				if binding != "" {
+					if err := store.SetWithTTL(binding, "key-a", time.Hour); err != nil {
+						t.Fatal(err)
+					}
+				}
+				bf := newStickyTestBifrost(t, store, func(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, keys []schemas.Key) ([]schemas.Key, error) {
+					switch mode {
+					case "empty":
+						return nil, nil
+					case "error":
+						return nil, errors.New("filter unavailable")
+					case "foreign":
+						return []schemas.Key{{ID: "outside-pool"}}, nil
+					case "modified":
+						key := keys[1]
+						key.Value = *schemas.NewSecretVar("sk-replaced")
+						return []schemas.Key{key}, nil
+					default:
+						return keys[1:], nil
+					}
+				})
+				plan, handled, err := bf.buildStickyKeyPlan(stickyTestContext(), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+				if err != nil || !handled || plan == nil {
+					t.Fatalf("expected handled filtered plan, handled=%v hasPlan=%v err=%v", handled, plan != nil, err)
+				}
+				if mode == "empty" || mode == "foreign" {
+					if _, err := plan.keyProvider()(nil, nil); !errors.Is(err, errAllKeysFiltered) {
+						t.Fatalf("expected filtered-pool error without selector fallback, err=%v", err)
+					}
+				} else {
+					wantID, wantValue := "key-b", "sk-b"
+					if mode == "error" {
+						wantID, wantValue = "key-a", "sk-a"
+					}
+					key, err := plan.keyProvider()(nil, nil)
+					if err != nil || key.ID != wantID || key.Value.GetValue() != wantValue {
+						t.Fatalf("initial key must respect filter and canonical credentials: got ID=%q want=%q err=%v", key.ID, wantID, err)
+					}
+					if seed == "fresh" {
+						stored, err := store.Get(buildStickyQuotaKey(schemas.OpenAI, "session-1", "gpt-4"))
+						if err != nil || stored != wantID {
+							t.Fatalf("unexpected initial binding: %v err=%v", stored, err)
+						}
+					}
+				}
+				if binding != "" {
+					stored, err := store.Get(binding)
+					if err != nil || stored != "key-a" {
+						t.Fatalf("filtering must not overwrite existing binding: %v err=%v", stored, err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestStickyKeyPlanFilterErrorKeepsBinding(t *testing.T) {
 	store := newStickyTestKVStore()
 	bf := newStickyTestBifrost(t, store, func(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, _ []schemas.Key) ([]schemas.Key, error) {
