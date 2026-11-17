@@ -27,4 +27,16 @@ Only a new final-priority Bifrost drop-in changes ExecStart's binary. App direct
 
 Old b707 binary and original unit/drop-ins remain. Binary-only rollback removes/disables only the new RC4 drop-in after a controlled stop and a fresh snapshot of current state, then restarts the old binary retaining current databases and OAuth chain. Never blindly restore this pre-upgrade backup after token rotation or new effects. Full data recovery requires specific schema/state reconciliation. No rollback was performed after RC4 activation.
 
-Real fresh read-only OAuth authorization/persistence/proactive refresh/restart/discovery passed in isolation. Production Airwallex still requires login; revocation and natural business acceptance are not claimed. Historical upstream test exceptions remain documented. Owner production business acceptance is pending.
+Real fresh read-only OAuth authorization/persistence/proactive refresh/restart/discovery passed in isolation. At cutover, production Airwallex still required login; the later authorization and renewal are recorded below. Revocation and natural business acceptance are not claimed. Historical upstream test exceptions remain documented. Owner production business acceptance is pending.
+
+## Production Airwallex authorization and automatic renewal
+
+After cutover, the owner completed the native authorization flow for the existing production Airwallex MCP client. Native complete-oauth returned HTTP 200 success; Airwallex recovered to healthy with 64 tools, and all 14 MCP clients were healthy. Access and refresh credentials were persisted encrypted. All 35 granted scopes match the existing OAuth configuration; no permission expansion was performed.
+
+Airwallex rejected a registration attempt using the Tailnet HTTP callback with invalid_redirect_uri. The existing registration was retained and reauthorization used its registered localhost:28089 callback through a temporary SSH forward on the login workstation. That forward was closed after completion. No persistent callback proxy or gateway configuration change was introduced.
+
+Read-only observation confirmed automatic production token renewal at 2026-11-17 18:34:43 +08:00: last_refreshed_at advanced from null and expiry advanced from 18:36:17 to 18:39:42 +08:00. At the 18:35:21 +08:00 token readback, the token remained active and encrypted, both credentials were present, and scopes still matched. Subsequent native client readback remained 14/14 healthy with 64 Airwallex tools. Service PID remained 1184335, NRestarts=0; no forced refresh or restart was used for this verification.
+
+Sanitized evidence: [production-oauth-20261117.json](production-oauth-20261117.json). Credential values, authorization URLs, flow state and admin authentication are excluded. This closes the production authorization/persistence/first automatic renewal observation. Tool visibility and healthy state are not business-call acceptance; business operations and revocation remain NOT_RUN. Continued long-term stability remains normal operational observation.
+
+This follow-up changes documentation only, with no runtime or wire-visible behavior change. Validation: live read-only OAuth/database and native client readback, evidence assertions, and git diff --check. Runtime tests were not rerun for this documentation-only update. Existing release tag and assets remain unchanged. The pre-upgrade database backup must not replace the now-rotated production OAuth chain.

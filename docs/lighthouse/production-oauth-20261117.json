@@ -1,0 +1,27 @@
+{
+  "oauth": {
+    "status": "active",
+    "expires_at": "2026-11-17 18:39:42.601016263+08:00",
+    "last_refreshed_at": "2026-11-17 18:34:43.601016263+08:00",
+    "encryption_status": "encrypted",
+    "access_present": 1,
+    "refresh_present": 1,
+    "scope_count": 35,
+    "scopes_match_config": true,
+    "checked_at": "2026-11-17T10:35:21.559468+00:00",
+    "service": {
+      "MainPID": "1184335",
+      "NRestarts": "0",
+      "ActiveState": "active"
+    }
+  },
+  "mcp": {
+    "clients": 14,
+    "healthy": 14,
+    "airwallex_tools": 64,
+    "airwallex_state": "healthy"
+  },
+  "business_calls": "NOT_RUN",
+  "forced_refresh": false,
+  "service_restart": false
+}
