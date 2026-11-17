@@ -550,6 +550,10 @@ func (cd *ConfigData) governanceSectionPresent(name string) bool {
 // for VectorStoreConfig, ConfigStoreConfig, and LogsStoreConfig to ensure proper
 // type safety and configuration parsing.
 func (cd *ConfigData) UnmarshalJSON(data []byte) error {
+	if cd.MCP != nil && len(cd.MCP.ControlledConnectors) != 0 {
+		return errors.New("pre-existing nonempty mcp.controlled_connectors is unsupported by Lighthouse 2.5.1; refusing to ignore protected connector policy")
+	}
+
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("failed to inspect config data: %w", err)
@@ -1222,7 +1226,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
 	// 4a. Global proxy (store only). Loaded before providers so the first
 	// GetConfigForProvider already sees it for providers that inherit it.
-	loadGlobalProxyConfig(ctx, config)
+	if err := loadGlobalProxyConfig(ctx, config); err != nil {
+		return nil, err
+	}
 	// Outbound clients for non-inference traffic (webhooks, skills, plugin downloads,
 	// MCP, OAuth, catalog sync, telemetry), built now so everything constructed below
 	// can take it. Registered as the process default for call sites without a handle.
@@ -1233,7 +1239,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		return nil, err
 	}
 	// 6. MCP config
-	loadMCPConfig(ctx, config, &configData)
+	if err := loadMCPConfig(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	for _, problem := range unresolvedInjectedTools(config.Providers, config.GetMCPClientNames()) {
 		logger.Warn("%s; requests to this provider are sent without it until the client exists", problem)
 	}
@@ -1242,7 +1250,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 7a. Relays (before governance, whose virtual keys may grant them)
 	loadRelaysConfig(ctx, config, &configData)
 	// 8. Governance config
-	loadGovernanceConfig(ctx, config, &configData)
+	if err := loadGovernanceConfig(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// 8a. Agent Gateway registrations (after governance so file-declared virtual
 	// keys exist before agent grants referencing them are written)
 	loadAgentsConfig(ctx, config, &configData)
@@ -1256,7 +1266,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	config.warpFileConfig = configData.Warp
 	config.warpFileIsSourceOfTruth = configData.isConfigJSONSourceOfTruth()
 	// 10. Plugins
-	loadPlugins(ctx, config, &configData)
+	if err := loadPlugins(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// 11. Skills registry (after plugins, before framework)
 	loadSkillsRegistry(ctx, config, &configData)
 	// 12. Framework config and pricing manager
@@ -1868,7 +1880,7 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 		logger.Debug("getting providers config from store")
 		providersInConfigStore, err = config.ConfigStore.GetProvidersConfig(ctx)
 		if err != nil {
-			logger.Warn("failed to get providers config from store: %v", err)
+			return fmt.Errorf("failed to get providers config from store: %w", err)
 		}
 	}
 	if providersInConfigStore == nil {
@@ -2317,12 +2329,12 @@ func ResolveMCPClientAuthType(authType schemas.MCPAuthType, connectionType schem
 // loadMCPConfig loads the MCP client configs from the store and config.json and
 // reconciles the two. A config.json client that cannot be created is skipped, and a
 // stored client of the same name keeps its stored configuration.
-func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) {
+func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) error {
 	if config.ConfigStore == nil {
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
 			logger.Warn("config store is disabled - MCP manager will not be initialized. MCP clients require config store for persistence.")
 		}
-		return
+		return nil
 	}
 	// Validate MCP client names from config file before processing
 	if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
@@ -2408,7 +2420,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 		logger.Debug("getting MCP config from store")
 		tableMCPConfig, err := config.ConfigStore.GetMCPConfig(ctx)
 		if err != nil {
-			logger.Warn("failed to get MCP config from store: %v", err)
+			return fmt.Errorf("failed to get MCP config from store: %w", err)
 		} else if tableMCPConfig != nil {
 			config.MCPConfig = tableMCPConfig
 		}
@@ -2455,6 +2467,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 			}
 		}
 	}
+	return nil
 }
 
 // pinnedPerUserDiscoveryError checks fileClient's per_user_discovery against the
@@ -3692,7 +3705,7 @@ func syncAgentRegistrationsFromFile(ctx context.Context, config *Config, fileAge
 }
 
 // loadGovernanceConfig loads and merges governance config from file
-func loadGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) {
+func loadGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) error {
 	if configData.Governance != nil {
 		if err := resolveGovernanceKeyReferences(ctx, config, configData.Governance); err != nil {
 			logger.Fatal("failed to resolve governance key references: %v", err)
@@ -3706,7 +3719,7 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 		logger.Debug("getting governance config from store")
 		governanceConfig, err = config.ConfigStore.GetGovernanceConfig(ctx)
 		if err != nil {
-			logger.Warn("failed to get governance config from store: %v", err)
+			return fmt.Errorf("failed to get governance config from store: %w", err)
 		}
 	} else {
 		logger.Debug("config.ConfigStore is nil, skipping store lookup")
@@ -3731,6 +3744,7 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 	if governanceConfig != nil && configData.Governance != nil {
 		mergeGovernanceConfig(ctx, config, configData, governanceConfig)
 	}
+	return nil
 }
 
 func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governanceConfig *configstore.GovernanceConfig) error {
@@ -6532,7 +6546,7 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 }
 
 // loadPlugins loads and merges plugins from file
-func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
+func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) error {
 	// Hash of config.json recorded at each stored plugin's last sync, keyed by plugin name.
 	storedPluginHashes := make(map[string]string)
 	// First load plugins from DB
@@ -6540,7 +6554,7 @@ func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 		logger.Debug("getting plugins from store")
 		plugins, err := config.ConfigStore.GetPlugins(ctx)
 		if err != nil {
-			logger.Warn("failed to get plugins from store: %v", err)
+			return fmt.Errorf("failed to get plugins from store: %w", err)
 		}
 		if plugins != nil {
 			config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
@@ -6575,6 +6589,7 @@ func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 	} else if configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("plugins") {
 		syncPluginsFromFile(ctx, config, configData)
 	}
+	return nil
 }
 
 // defaultPluginVersion mirrors the version column default, so a config.json entry that
@@ -7362,6 +7377,10 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 // initEncryption initializes encryption from config data or environment variables.
 // When configData.EncryptionKey is nil (no config file), falls through to env var check.
 func initEncryption(configData *ConfigData) error {
+	if configData.EncryptionKey != nil && configData.EncryptionKey.IsFromSecret() && configData.EncryptionKey.GetValue() == "" {
+		return fmt.Errorf("configured encryption key secret reference could not be resolved")
+	}
+
 	if configData.EncryptionKey == nil || configData.EncryptionKey.GetValue() == "" {
 		// Checking if BIFROST_ENCRYPTION_KEY environment variable is set
 		if os.Getenv("BIFROST_ENCRYPTION_KEY") != "" {
@@ -8165,18 +8184,17 @@ func (c *Config) GetRawConfigString() string {
 //
 // Returns a copy of the configuration to prevent external modifications.
 // loadGlobalProxyConfig reads the global proxy from the config store. A read
-// failure is logged and leaves the proxy unset rather than failing startup, the
-// same as before the global proxy reached inference.
-func loadGlobalProxyConfig(ctx context.Context, config *Config) {
+// failure aborts startup rather than silently dropping the configured proxy.
+func loadGlobalProxyConfig(ctx context.Context, config *Config) error {
 	if config.ConfigStore == nil {
-		return
+		return nil
 	}
 	proxyConfig, err := config.ConfigStore.GetProxyConfig(ctx)
 	if err != nil {
-		logger.Warn("failed to load global proxy config: %v", err)
-		return
+		return fmt.Errorf("failed to load global proxy config: %w", err)
 	}
 	config.ProxyConfig = proxyConfig
+	return nil
 }
 
 // GetGlobalProxyConfig returns the global proxy configuration, or nil when none is set.

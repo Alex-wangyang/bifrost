@@ -5,9 +5,11 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -476,7 +478,7 @@ func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declare
 	// Convert to Bifrost tool call format
 	toolCallType := "function"
 	toolCallID := fmt.Sprintf("mcp-%s", toolName)
-	argsJSON, jsonErr := sonic.Marshal(request.GetArguments())
+	argsJSON, jsonErr := lighthouseToolArguments(request)
 	if jsonErr != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal tool arguments: %v", jsonErr))
 	}
@@ -541,6 +543,10 @@ func gatewayTool(tool schemas.ChatTool) mcp.Tool {
 		serverTool.Title, serverTool.Icons, serverTool.RawOutputSchema = tool.MCP.Title, tool.MCP.Icons, tool.MCP.OutputSchema
 	}
 	serverTool.Meta, _ = toolMeta(tool)
+	if tool.MCP != nil && tool.MCP.RawDefinition != nil {
+		serverTool.RawToolJSON = tool.MCP.RawDefinition
+		serverTool.RawToolJSONConflict = tool.MCP.ProjectionFingerprint == "" || schemas.MCPDefinitionFingerprint(tool) != tool.MCP.ProjectionFingerprint
+	}
 	return serverTool
 }
 
@@ -1224,4 +1230,16 @@ func copyMCPHeaders(ctx *fasthttp.RequestCtx, header http.Header) {
 			}
 		}
 	}
+}
+
+// Keep exact numbers only while the SDK's decoded projection is unchanged.
+// A hook's argument edits remain authoritative over the captured raw bytes.
+func lighthouseToolArguments(request mcp.CallToolRequest) ([]byte, error) {
+	if len(request.Params.RawArguments) > 0 {
+		var original map[string]any
+		if json.Unmarshal(request.Params.RawArguments, &original) == nil && reflect.DeepEqual(original, request.GetArguments()) {
+			return append([]byte(nil), request.Params.RawArguments...), nil
+		}
+	}
+	return sonic.Marshal(request.GetArguments())
 }

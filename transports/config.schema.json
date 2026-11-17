@@ -2352,6 +2352,11 @@
       "type": "object",
       "description": "Model Context Protocol configuration",
       "properties": {
+        "controlled_connectors": {
+          "type": "object",
+          "maxProperties": 0,
+          "description": "Lighthouse 2.5.1 accepts only an empty legacy policy. Nonempty controlled connector policies are unsupported and rejected at startup."
+        },
         "client_configs": {
           "type": "array",
           "items": {

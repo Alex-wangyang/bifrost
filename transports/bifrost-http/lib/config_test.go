@@ -27146,3 +27146,337 @@ func TestAgentGrantsFromConfigFile_NewKeyUnknownAgent(t *testing.T) {
 		assert.Empty(t, vk.AgentGrants)
 	}
 }
+
+const startupFailClosedV3Key = "startup-failclosed-v3-stored-encryption-key"
+
+func resetStartupFailClosedV3Encryption(t *testing.T) {
+	t.Helper()
+	testLog := &testLogger{}
+	encrypt.Init("", testLog)
+	t.Cleanup(func() {
+		encrypt.Init("", testLog)
+	})
+}
+
+func TestStartupFailClosedV3ProviderReadErrors(t *testing.T) {
+	initTestLogger()
+	resetStartupFailClosedV3Encryption(t)
+	ctx := context.Background()
+
+	for _, testCase := range []struct {
+		name string
+		key  string
+	}{
+		{name: "missing key"},
+		{name: "wrong key", key: "startup-failclosed-v3-wrong-encryption-key"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			encrypt.Init(startupFailClosedV3Key, &testLogger{})
+			seeded := makeProviderConfig("stored-key", "stored-provider-secret")
+			require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.ModelProvider("openai"): seeded,
+			}))
+
+			encrypt.Init(testCase.key, &testLogger{})
+			config := &Config{ConfigStore: store}
+			fileFallback := makeProviderConfig("file-key", "file-provider-secret")
+			err := loadProviders(ctx, config, &ConfigData{
+				Providers: map[string]configstore.ProviderConfig{"anthropic": fileFallback},
+			})
+			require.Error(t, err, "encrypted provider state must not be replaced by config-file fallback")
+			require.NotContains(t, config.Providers, schemas.ModelProvider("anthropic"))
+
+			var providerNames []string
+			require.NoError(t, store.DB().Table("config_providers").Order("name").Pluck("name", &providerNames).Error)
+			require.Equal(t, []string{"openai"}, providerNames, "the file fallback must not be persisted")
+
+			encrypt.Init(startupFailClosedV3Key, &testLogger{})
+			persisted, err := store.GetProvidersConfig(ctx)
+			require.NoError(t, err)
+			require.Len(t, persisted, 1)
+			require.Equal(t, "stored-provider-secret", persisted[schemas.ModelProvider("openai")].Keys[0].Value.GetValue())
+		})
+	}
+}
+
+func TestStartupFailClosedV3EncryptionKeyReferences(t *testing.T) {
+	initTestLogger()
+	resetStartupFailClosedV3Encryption(t)
+	fallbackKey := "startup-failclosed-v3-valid-fallback-key"
+	t.Setenv("BIFROST_ENCRYPTION_KEY", fallbackKey)
+
+	for _, testCase := range []struct {
+		name string
+		ref  string
+	}{
+		{name: "unresolved env", ref: "env.STARTUP_FAILCLOSED_V3_MISSING"},
+		{name: "unresolved vault", ref: "vault.startup-failclosed-v3-unresolved"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			encrypt.Init("", &testLogger{})
+			if testCase.ref == "env.STARTUP_FAILCLOSED_V3_MISSING" {
+				t.Setenv("STARTUP_FAILCLOSED_V3_MISSING", "")
+			}
+			unresolved := schemas.NewSecretVar(testCase.ref)
+			require.True(t, unresolved.IsFromSecret())
+			require.Empty(t, unresolved.GetValue())
+
+			err := initEncryption(&ConfigData{EncryptionKey: unresolved})
+			require.Error(t, err)
+			require.False(t, encrypt.IsEnabled(), "an unresolved explicit reference must not use the fallback key")
+			require.NotContains(t, err.Error(), testCase.ref)
+			require.NotContains(t, err.Error(), fallbackKey)
+		})
+	}
+}
+
+func TestStartupFailClosedV3EncryptionControls(t *testing.T) {
+	initTestLogger()
+	resetStartupFailClosedV3Encryption(t)
+
+	t.Run("no key keeps plaintext configuration", func(t *testing.T) {
+		t.Setenv("BIFROST_ENCRYPTION_KEY", "")
+		encrypt.Init("", &testLogger{})
+		require.NoError(t, initEncryption(&ConfigData{}))
+		require.False(t, encrypt.IsEnabled())
+	})
+
+	t.Run("empty literal retains environment fallback", func(t *testing.T) {
+		t.Setenv("BIFROST_ENCRYPTION_KEY", "startup-failclosed-v3-empty-key-fallback")
+		encrypt.Init("", &testLogger{})
+		require.NoError(t, initEncryption(&ConfigData{EncryptionKey: schemas.NewSecretVar("")}))
+		require.True(t, encrypt.IsEnabled())
+	})
+
+	t.Run("valid environment reference resolves", func(t *testing.T) {
+		t.Setenv("BIFROST_ENCRYPTION_KEY", "startup-failclosed-v3-different-valid-fallback")
+		t.Setenv("STARTUP_FAILCLOSED_V3_VALID_SECRET", "startup-failclosed-v3-resolved-env-key")
+		encrypt.Init("", &testLogger{})
+		require.NoError(t, initEncryption(&ConfigData{
+			EncryptionKey: schemas.NewSecretVar("env.STARTUP_FAILCLOSED_V3_VALID_SECRET"),
+		}))
+		expected := encrypt.Key()
+		encrypt.Init("startup-failclosed-v3-different-valid-fallback", &testLogger{})
+		require.NotEqual(t, expected, encrypt.Key(), "the explicit env reference must take precedence over fallback")
+	})
+
+	t.Run("plain literal key remains supported", func(t *testing.T) {
+		t.Setenv("BIFROST_ENCRYPTION_KEY", "startup-failclosed-v3-different-valid-fallback")
+		encrypt.Init("", &testLogger{})
+		require.NoError(t, initEncryption(&ConfigData{
+			EncryptionKey: schemas.NewSecretVar("startup-failclosed-v3-literal-key"),
+		}))
+		require.True(t, encrypt.IsEnabled())
+	})
+}
+
+func TestLighthouseControlledConfigRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "policy", raw: `{"mcp":{"controlled_connectors":{"protected":{"single_attempt":true}}}}`},
+		{name: "null", raw: `{"mcp":{"controlled_connectors":null}}`},
+		{name: "array", raw: `{"mcp":{"controlled_connectors":[]}}`},
+		{name: "string", raw: `{"mcp":{"controlled_connectors":"invalid"}}`},
+		{name: "uppercase property alias", raw: `{"mcp":{"CONTROLLED_CONNECTORS":{"protected":true}}}`},
+		{name: "escaped property alias", raw: `{"mcp":{"controlled\u005fconnectors":{"protected":true}}}`},
+		{name: "unicode long-s property alias", raw: `{"mcp":{"controlled_connectorſ":{"protected":true}}}`},
+		{name: "duplicate property policy then empty", raw: `{"mcp":{"controlled_connectors":{"protected":true},"controlled_connectors":{}}}`},
+		{name: "duplicate property empty then policy", raw: `{"mcp":{"controlled_connectors":{},"controlled_connectors":{"protected":true}}}`},
+		{name: "duplicate mcp policy then empty", raw: `{"mcp":{"controlled_connectors":{"protected":true}},"mcp":{}}`},
+		{name: "duplicate mcp empty then policy", raw: `{"mcp":{},"mcp":{"controlled_connectors":{"protected":true}}}`},
+		{name: "duplicate mcp case alias policy then empty", raw: `{"mcp":{"controlled_connectors":{"protected":true}},"MCP":{}}`},
+		{name: "duplicate mcp case alias empty then policy", raw: `{"MCP":{},"mcp":{"controlled_connectors":{"protected":true}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var config ConfigData
+			require.Error(t, json.Unmarshal([]byte(tc.raw), &config))
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "absent", raw: `{}`},
+		{name: "empty mcp", raw: `{"mcp":{}}`},
+		{name: "empty policy", raw: `{"mcp":{"controlled_connectors":{}}}`},
+		{name: "empty alias with duration", raw: `{"mcp":{"CONTROLLED_CONNECTORS":{},"tool_sync_interval":"10m"}}`},
+		{name: "repeated empty mcp aliases", raw: `{"mcp":{"controlled_connectors":{}},"MCP":{}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var config ConfigData
+			require.NoError(t, json.Unmarshal([]byte(tc.raw), &config))
+			if tc.name == "empty alias with duration" {
+				require.Equal(t, 10*time.Minute, config.MCP.ToolSyncInterval)
+			}
+		})
+	}
+}
+
+func TestLighthouseControlledConfigReuseRejectsPreexistingPolicy(t *testing.T) {
+	for _, input := range []string{`{}`, `{"mcp":{}}`} {
+		config := ConfigData{MCP: &schemas.MCPConfig{
+			ControlledConnectors: map[string]json.RawMessage{"old": json.RawMessage(`true`)},
+		}}
+		oldMCP := config.MCP
+		err := json.Unmarshal([]byte(input), &config)
+		require.Error(t, err)
+		require.Same(t, oldMCP, config.MCP)
+		require.Equal(t, json.RawMessage(`true`), config.MCP.ControlledConnectors["old"])
+	}
+}
+
+func TestStartupFailClosedV3MCPReadErrors(t *testing.T) {
+	initTestLogger()
+	resetStartupFailClosedV3Encryption(t)
+	ctx := context.Background()
+
+	for _, testCase := range []struct {
+		name string
+		key  string
+	}{
+		{name: "missing key"},
+		{name: "wrong key", key: "startup-failclosed-v3-wrong-encryption-key"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			encrypt.Init(startupFailClosedV3Key, &testLogger{})
+			storedClient := &schemas.MCPClientConfig{
+				ID:               "stored-mcp",
+				Name:             "stored_mcp",
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://stored.example/mcp"),
+				Headers: map[string]schemas.SecretVar{
+					"Authorization": *schemas.NewSecretVar("Bearer stored-mcp-secret"),
+				},
+			}
+			require.NoError(t, store.CreateMCPClientConfig(ctx, storedClient))
+
+			encrypt.Init(testCase.key, &testLogger{})
+			config := &Config{ConfigStore: store}
+			fileFallback := &schemas.MCPClientConfig{
+				ID:               "file-mcp",
+				Name:             "fallback_mcp",
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://fallback.example/mcp"),
+			}
+			err := loadMCPConfig(ctx, config, &ConfigData{
+				MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{fileFallback}},
+			})
+			require.Error(t, err)
+			require.Nil(t, config.MCPConfig, "encrypted MCP state must not be replaced by config-file fallback")
+
+			var clientNames []string
+			require.NoError(t, store.DB().Table("config_mcp_clients").Order("name").Pluck("name", &clientNames).Error)
+			require.Equal(t, []string{"stored_mcp"}, clientNames, "the file fallback must not be persisted")
+
+			encrypt.Init(startupFailClosedV3Key, &testLogger{})
+			persisted, err := store.GetMCPConfig(ctx)
+			require.NoError(t, err)
+			require.Len(t, persisted.ClientConfigs, 1)
+			require.Equal(t, "stored_mcp", persisted.ClientConfigs[0].Name)
+			require.Equal(t, "https://stored.example/mcp", persisted.ClientConfigs[0].ConnectionString.GetValue())
+			header := persisted.ClientConfigs[0].Headers["Authorization"]
+			require.Equal(t, "Bearer stored-mcp-secret", header.GetValue())
+		})
+	}
+}
+
+func TestStartupFailClosedV3ProxyReadError(t *testing.T) {
+	initTestLogger()
+	resetStartupFailClosedV3Encryption(t)
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+
+	encrypt.Init(startupFailClosedV3Key, &testLogger{})
+	require.NoError(t, store.UpdateProxyConfig(ctx, &configstoreTables.GlobalProxyConfig{
+		Enabled:  true,
+		Type:     "http",
+		URL:      "http://proxy.example:8080",
+		Password: "stored-proxy-secret",
+	}))
+	encrypt.Init("startup-failclosed-v3-wrong-encryption-key", &testLogger{})
+
+	config := &Config{ConfigStore: store}
+	err := loadGlobalProxyConfig(ctx, config)
+	require.Error(t, err)
+	require.Nil(t, config.ProxyConfig)
+
+	encrypt.Init(startupFailClosedV3Key, &testLogger{})
+	persisted, err := store.GetProxyConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, persisted)
+	require.Equal(t, "stored-proxy-secret", persisted.Password)
+}
+
+func TestStartupFailClosedV3GovernanceReadError(t *testing.T) {
+	initTestLogger()
+	resetStartupFailClosedV3Encryption(t)
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+
+	encrypt.Init("", &testLogger{})
+	require.NoError(t, store.CreateVirtualKey(ctx, &configstoreTables.TableVirtualKey{
+		ID:                "v3-plain-vk",
+		Name:              "v3-plain-vk",
+		Value:             *schemas.NewSecretVar("v3-plain-vk-secret"),
+		IsActive:          schemas.Ptr(true),
+		AllowAllProviders: true,
+	}))
+	encrypt.Init(startupFailClosedV3Key, &testLogger{})
+	require.NoError(t, store.CreateVirtualKey(ctx, &configstoreTables.TableVirtualKey{
+		ID:                "v3-encrypted-vk",
+		Name:              "v3-encrypted-vk",
+		Value:             *schemas.NewSecretVar("v3-encrypted-vk-secret"),
+		IsActive:          schemas.Ptr(true),
+		AllowAllProviders: true,
+	}))
+	encrypt.Init("startup-failclosed-v3-wrong-encryption-key", &testLogger{})
+
+	config := &Config{ConfigStore: store}
+	err := loadGovernanceConfig(ctx, config, &ConfigData{})
+	require.Error(t, err)
+	require.Nil(t, config.GovernanceConfig)
+
+	encrypt.Init(startupFailClosedV3Key, &testLogger{})
+	persisted, err := store.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, persisted.VirtualKeys, 2)
+}
+
+func TestStartupFailClosedV3PluginReadError(t *testing.T) {
+	initTestLogger()
+	resetStartupFailClosedV3Encryption(t)
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+
+	encrypt.Init(startupFailClosedV3Key, &testLogger{})
+	require.NoError(t, store.CreatePlugin(ctx, &configstoreTables.TablePlugin{
+		Name:    "stored_plugin",
+		Enabled: true,
+		Config:  map[string]any{"token": "stored-plugin-secret"},
+	}))
+	encrypt.Init("startup-failclosed-v3-wrong-encryption-key", &testLogger{})
+
+	config := &Config{ConfigStore: store}
+	fileFallback := &schemas.PluginConfig{
+		Name:    "fallback_plugin",
+		Enabled: true,
+		Config:  map[string]any{"token": "file-plugin-secret"},
+	}
+	err := loadPlugins(ctx, config, &ConfigData{Plugins: []*schemas.PluginConfig{fileFallback}})
+	require.Error(t, err)
+	require.Empty(t, config.PluginConfigs)
+
+	var pluginNames []string
+	require.NoError(t, store.DB().Table("config_plugins").Order("name").Pluck("name", &pluginNames).Error)
+	require.Equal(t, []string{"stored_plugin"}, pluginNames, "the file fallback must not be persisted")
+
+	encrypt.Init(startupFailClosedV3Key, &testLogger{})
+	persisted, err := store.GetPlugins(ctx)
+	require.NoError(t, err)
+	require.Len(t, persisted, 1)
+	require.Equal(t, "stored_plugin", persisted[0].Name)
+}

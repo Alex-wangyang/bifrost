@@ -4010,6 +4010,7 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build TLS HTTP client: %w", err)
 	}
+	httpClient = m.withLighthouseOAuthRefresh(httpClient, config, url)
 	if httpClient != nil {
 		opts = append(opts, transport.WithHTTPBasicClient(httpClient))
 	}
@@ -4024,10 +4025,14 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 		Type:          config.ConnectionType,
 		ConnectionURL: &url,
 	}
-	if listenOn != "" {
-		return client.NewClient(httpTransport, manualInputRoundTrips, client.WithProtocolVersion(listenOn)), connectionInfo, nil
+	var clientTransport transport.Interface = httpTransport
+	if config.AuthType == schemas.MCPAuthTypeOauth {
+		clientTransport = &lighthouseSharedHTTPTransport{StreamableHTTP: httpTransport, httpClient: httpClient}
 	}
-	return client.NewClient(httpTransport, manualInputRoundTrips), connectionInfo, nil
+	if listenOn != "" {
+		return client.NewClient(clientTransport, manualInputRoundTrips, client.WithProtocolVersion(listenOn)), connectionInfo, nil
+	}
+	return client.NewClient(clientTransport, manualInputRoundTrips), connectionInfo, nil
 }
 
 // createSTDIOConnection creates a STDIO-based MCP client connection without holding locks.

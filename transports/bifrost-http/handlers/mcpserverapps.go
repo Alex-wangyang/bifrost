@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -134,6 +135,7 @@ func applyAppTools(ctx context.Context, index *gatewayToolIndex, result *mcp.Lis
 	for i, tool := range result.Tools {
 		if meta, ok := index.aggregateMeta[tool.Name]; ok {
 			result.Tools[i].Meta = meta
+			rewriteRawAppResourceURIs(&result.Tools[i], meta)
 		}
 	}
 }
@@ -145,6 +147,7 @@ func callersGatewayTool(tool schemas.ChatTool, aggregate bool) mcp.Tool {
 	if aggregate {
 		if _, namespaced := toolMeta(tool); namespaced != nil {
 			listed.Meta = namespaced
+			rewriteRawAppResourceURIs(&listed, namespaced)
 		}
 	}
 	return listed
@@ -318,4 +321,29 @@ func dropRefusalTools(index *gatewayToolIndex, result *mcp.ListToolsResult) {
 		}
 	}
 	result.Tools = kept
+}
+
+// Only the gateway-owned UI resource namespace may be rewritten after sealing
+// a full definition. Preserve all other raw metadata, including exact numbers.
+func rewriteRawAppResourceURIs(tool *mcp.Tool, meta *mcp.Meta) {
+	if tool.RawToolJSON == nil || tool.RawToolJSONConflict {
+		return
+	}
+	projected, err := json.Marshal(meta)
+	if err != nil {
+		tool.RawToolJSONConflict = true
+		return
+	}
+	raw := slices.Clone(tool.RawToolJSON)
+	for _, path := range uiResourcePaths {
+		value := gjson.GetBytes(projected, path)
+		if value.Exists() {
+			raw, err = sjson.SetBytes(raw, "_meta."+path, value.String())
+			if err != nil {
+				tool.RawToolJSONConflict = true
+				return
+			}
+		}
+	}
+	tool.RawToolJSON = raw
 }

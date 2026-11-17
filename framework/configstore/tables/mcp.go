@@ -568,7 +568,7 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 		}
 	}
 	if c.DiscoveredToolsJSON != "" {
-		if err := sonic.Unmarshal([]byte(c.DiscoveredToolsJSON), &c.DiscoveredTools); err != nil {
+		if err := schemas.DecodeLighthouseToolCache([]byte(c.DiscoveredToolsJSON), &c.DiscoveredTools); err != nil {
 			return err
 		}
 	}

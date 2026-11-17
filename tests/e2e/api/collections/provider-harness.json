@@ -313733,6 +313733,320 @@
           ]
         }
       ]
+    },
+    {
+      "name": "328. Lighthouse isolated MCP fidelity",
+      "description": "Offline fixture only. Requires isolationFixture mock and a synthetic lighthouseIsolationKey. No real provider or business tool is invoked. Uses the native /mcp route; no LLM conversion routes are changed. Run inside the network-none test namespace.",
+      "item": [
+        {
+          "name": "[PREVIEW] [NO-CONTENT] Lighthouse isolated MCP initialize",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{lighthouseIsolationKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"initialize\", \"params\": {\"protocolVersion\": \"2025-06-18\", \"capabilities\": {}, \"clientInfo\": {\"name\": \"lighthouse-isolation\", \"version\": \"1\"}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text();",
+                  "pm.test('HTTP success', function () { pm.expect(pm.response.code, raw).to.equal(200); });",
+                  "var lines = raw.split(/\\r?\\n/).filter(function (x) { return x.indexOf('data: ') === 0; });",
+                  "var payload = lines.length ? lines[lines.length - 1].slice(6) : raw;",
+                  "var j = JSON.parse(payload);",
+                  "pm.test('RPC result', function () { pm.expect(j.error, raw).to.equal(undefined); pm.expect(j.result, raw).to.be.an('object'); });",
+                  "var sid = pm.response.headers.get('Mcp-Session-Id'); if (sid) { pm.collectionVariables.set('lighthouseSession', sid); }",
+                  "pm.test('Initialized', function () { pm.expect(j.result.protocolVersion, raw).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [NO-CONTENT] Lighthouse isolated MCP tools/list",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "Mcp-Session-Id",
+                "value": "{{lighthouseSession}}"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 2, \"method\": \"tools/list\", \"params\": {}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text();",
+                  "pm.test('HTTP success', function () { pm.expect(pm.response.code, raw).to.equal(200); });",
+                  "var lines = raw.split(/\\r?\\n/).filter(function (x) { return x.indexOf('data: ') === 0; });",
+                  "var payload = lines.length ? lines[lines.length - 1].slice(6) : raw;",
+                  "var j = JSON.parse(payload);",
+                  "pm.test('RPC result', function () { pm.expect(j.error, raw).to.equal(undefined); pm.expect(j.result, raw).to.be.an('object'); });",
+                  "var t = j.result.tools.filter(function (x) { return x.name === 'isolationFixture-fidelity_canary'; })[0];",
+                  "pm.test('Definition metadata preserved', function () { pm.expect(t, raw).to.be.an('object'); pm.expect(t.inputSchema.$ref).to.equal('#/$defs/Request'); pm.expect(t.outputSchema.required).to.deep.equal(['id']); pm.expect(t['x-extension']).to.deep.equal({retained:true}); pm.expect(t._meta.tag).to.equal('local-fixture'); pm.expect(payload).to.include('9007199254740993'); pm.expect(payload).not.to.include('9007199254740992'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [NO-CONTENT] Lighthouse isolated MCP tools/call echo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "Mcp-Session-Id",
+                "value": "{{lighthouseSession}}"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 3, \"method\": \"tools/call\", \"params\": {\"name\": \"isolationFixture-lighthouse_echo\", \"arguments\": {\"record_id\": 9007199254740993}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text();",
+                  "pm.test('HTTP success', function () { pm.expect(pm.response.code, raw).to.equal(200); });",
+                  "var lines = raw.split(/\\r?\\n/).filter(function (x) { return x.indexOf('data: ') === 0; });",
+                  "var payload = lines.length ? lines[lines.length - 1].slice(6) : raw;",
+                  "var j = JSON.parse(payload);",
+                  "pm.test('RPC result', function () { pm.expect(j.error, raw).to.equal(undefined); pm.expect(j.result, raw).to.be.an('object'); });",
+                  "pm.test('Exact argument and success', function () { pm.expect(j.result.isError || false, raw).to.equal(false); pm.expect(j.result.content[0].text).to.include('9007199254740993'); pm.expect(j.result.content[0].text).not.to.include('9007199254740992'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [NO-CONTENT] Lighthouse isolated MCP tools/call error",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "Mcp-Session-Id",
+                "value": "{{lighthouseSession}}"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 4, \"method\": \"tools/call\", \"params\": {\"name\": \"isolationFixture-lighthouse_error\", \"arguments\": {\"record_id\": 9007199254740993}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text();",
+                  "pm.test('HTTP success', function () { pm.expect(pm.response.code, raw).to.equal(200); });",
+                  "var lines = raw.split(/\\r?\\n/).filter(function (x) { return x.indexOf('data: ') === 0; });",
+                  "var payload = lines.length ? lines[lines.length - 1].slice(6) : raw;",
+                  "var j = JSON.parse(payload);",
+                  "pm.test('RPC result', function () { pm.expect(j.error, raw).to.equal(undefined); pm.expect(j.result, raw).to.be.an('object'); });",
+                  "pm.test('Exact argument and typed tool error', function () { pm.expect(j.result.isError, raw).to.equal(true); pm.expect(j.result.content[0].text).to.include('9007199254740993'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Lighthouse complete result fidelity RC2",
+      "description": "Isolated fixture only; requires the Lighthouse initialize/session and mock MCP setup. No model/provider request. Pins content extensions, exact metadata integers, structuredContent and typed isError. Startup-only configuration rejection is covered by Go and process startup tests, not an HTTP request.",
+      "item": [
+        {
+          "name": "[PREVIEW] [NO-CONTENT] Lighthouse complete result fidelity success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "Mcp-Session-Id",
+                "value": "{{lighthouseSession}}"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 3, \"method\": \"tools/call\", \"params\": {\"name\": \"isolationFixture-lighthouse_echo\", \"arguments\": {\"record_id\": 9007199254740993}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Complete result metadata remains exact\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var raw = pm.response.text(); var body = JSON.parse(raw);",
+                  "  pm.expect(body.error, raw).to.eql(undefined);",
+                  "  pm.expect(raw, raw).to.not.include(\"9007199254740992\");",
+                  "  pm.expect(raw, raw).to.include(\"x-extra\");",
+                  "  pm.expect((raw.match(/\"id\"\\s*:\\s*9007199254740993/g) || []).length, raw).to.eql(4);",
+                  "  pm.expect(body.result.isError === true).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [NO-CONTENT] Lighthouse complete result fidelity error",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{lighthouseIsolationKey}}"
+              },
+              {
+                "key": "Mcp-Session-Id",
+                "value": "{{lighthouseSession}}"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 4, \"method\": \"tools/call\", \"params\": {\"name\": \"isolationFixture-lighthouse_error\", \"arguments\": {\"record_id\": 9007199254740993}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Complete result metadata remains exact\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var raw = pm.response.text(); var body = JSON.parse(raw);",
+                  "  pm.expect(body.error, raw).to.eql(undefined);",
+                  "  pm.expect(raw, raw).to.not.include(\"9007199254740992\");",
+                  "  pm.expect(raw, raw).to.include(\"x-extra\");",
+                  "  pm.expect((raw.match(/\"id\"\\s*:\\s*9007199254740993/g) || []).length, raw).to.eql(4);",
+                  "  pm.expect(body.result.isError === true).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

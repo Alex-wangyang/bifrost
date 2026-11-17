@@ -249,9 +249,11 @@ type MCPCredentialStore interface {
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
 type MCPConfig struct {
-	ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`      // Per-client execution configurations
-	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
-	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
+	// ControlledConnectors accepts only an empty legacy policy. Nonempty policies require the legacy runtime.
+	ControlledConnectors map[string]json.RawMessage `json:"controlled_connectors,omitempty"`
+	ClientConfigs        []*MCPClientConfig         `json:"client_configs,omitempty"`      // Per-client execution configurations
+	ToolManagerConfig    *MCPToolManagerConfig      `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
+	ToolSyncInterval     time.Duration              `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 	// MaxProtocolVersion caps the MCP protocol version offered to upstreams ("" or "auto" = newest supported).
 	MaxProtocolVersion string `json:"max_protocol_version,omitempty"`
 
@@ -438,6 +440,16 @@ type MCPToolSpecConfig struct {
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
 // Numeric values remain supported for backward compatibility (treated as raw nanoseconds).
 func (c *MCPConfig) UnmarshalJSON(data []byte) error {
+	if c == nil {
+		return errors.New("cannot unmarshal MCP config into a nil receiver")
+	}
+	if len(c.ControlledConnectors) != 0 {
+		return errors.New("pre-existing nonempty mcp.controlled_connectors is unsupported by Lighthouse 2.5.1; refusing to ignore protected connector policy")
+	}
+	if err := validateControlledConnectors(data); err != nil {
+		return err
+	}
+
 	type alias MCPConfig
 	aux := &struct {
 		ToolSyncInterval *json.Number `json:"tool_sync_interval,omitempty"`
@@ -477,6 +489,44 @@ func (c *MCPConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	c.ToolSyncInterval = dur
+	return nil
+}
+
+// validateControlledConnectors checks every object member using the same
+// case-insensitive name matching used by encoding/json for struct fields.
+// Streaming preserves duplicate occurrences and Token decodes escaped names.
+func validateControlledConnectors(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	root, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if root != json.Delim('{') {
+		return nil // The struct decoder below reports non-object values.
+	}
+
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errors.New("invalid MCP config object member")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		if !strings.EqualFold(key, "controlled_connectors") {
+			continue
+		}
+
+		var entries map[string]json.RawMessage
+		if err := json.Unmarshal(value, &entries); err != nil || entries == nil || len(entries) != 0 {
+			return errors.New("nonempty or invalid mcp.controlled_connectors is unsupported by Lighthouse 2.5.1; refusing to ignore protected connector policy")
+		}
+	}
 	return nil
 }
 
@@ -1625,6 +1675,9 @@ type MCPClientTool struct {
 // MCPToolMetadata is what an MCP tool declares besides its function definition and annotations.
 // Bifrost-internal: never sent to providers.
 type MCPToolMetadata struct {
+	RawDefinition         json.RawMessage `json:"raw_definition,omitempty"`
+	ProjectionFingerprint string          `json:"projection_fingerprint,omitempty"`
+
 	Title         string          `json:"title,omitempty"`
 	Icons         []mcp.Icon      `json:"icons,omitempty"`
 	OutputSchema  json.RawMessage `json:"output_schema,omitempty"`

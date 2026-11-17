@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -5838,4 +5839,52 @@ func TestTableModelPricing_ColumnNamesFitPostgresLimit(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestLighthouseCapturedMigrationAndSweep(t *testing.T) {
+	path := os.Getenv("LIGHTHOUSE_OFFLINE_CAPTURE")
+	if path == "" {
+		t.Skip("private offline capture not supplied")
+	}
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	copyPath := filepath.Join(t.TempDir(), "capture.db")
+	require.NoError(t, os.WriteFile(copyPath, b, 0600))
+	db, err := gorm.Open(sqlite.Open(copyPath+"?_foreign_keys=1"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	conn, err := db.DB()
+	require.NoError(t, err)
+	defer conn.Close()
+	count := func(table string) int64 { var n int64; require.NoError(t, db.Table(table).Count(&n).Error); return n }
+	require.EqualValues(t, 15, count("oauth_configs"))
+	var configsBefore []map[string]interface{}
+	require.NoError(t, db.Table("oauth_configs").Order("id").Find(&configsBefore).Error)
+	var tokensBefore []map[string]interface{}
+	require.NoError(t, db.Table("mcp_oauth_tokens").Order("id").Find(&tokensBefore).Error)
+	require.NoError(t, triggerMigrations(context.Background(), db, newMockLogger()))
+	require.EqualValues(t, 15, count("oauth_configs"), "schema migration alone must not remove configs")
+	var configsAfter []map[string]interface{}
+	require.NoError(t, db.Table("oauth_configs").Order("id").Find(&configsAfter).Error)
+	for i, before := range configsBefore {
+		for key, value := range before {
+			require.Equal(t, value, configsAfter[i][key], "original OAuth config column %s", key)
+		}
+	}
+	var tokensAfter []map[string]interface{}
+	require.NoError(t, db.Table("mcp_oauth_tokens").Order("id").Find(&tokensAfter).Error)
+	require.Equal(t, tokensBefore, tokensAfter, "migration must retain complete token rows")
+	store := &RDBConfigStore{logger: newMockLogger()}
+	store.db.Store(db)
+	n, err := store.DeleteAbandonedOauthConfigs(context.Background(), time.Hour)
+	require.NoError(t, err)
+	require.EqualValues(t, 10, n)
+	require.EqualValues(t, 5, count("oauth_configs"))
+	require.EqualValues(t, 3, count("mcp_oauth_tokens"))
+	rows, err := conn.Query("PRAGMA foreign_key_check")
+	require.NoError(t, err)
+	defer rows.Close()
+	require.False(t, rows.Next())
+	var check string
+	require.NoError(t, conn.QueryRow("PRAGMA quick_check").Scan(&check))
+	require.Equal(t, "ok", check)
 }

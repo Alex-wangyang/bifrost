@@ -5,6 +5,7 @@ package schemas
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestMCPAuthURLHasTempTokenFragment(t *testing.T) {
@@ -195,5 +196,72 @@ func TestExchangesAsSSOApplication(t *testing.T) {
 		if got := tc.cfg.ExchangesAsSSOApplication(); got != tc.want {
 			t.Errorf("%s: ExchangesAsSSOApplication() = %v, want %v", name, got, tc.want)
 		}
+	}
+}
+
+func TestLighthouseControlledConnectorsCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name, input string
+		invalid     bool
+	}{
+		{"absent", `{}`, false}, {"empty", `{"controlled_connectors":{}}`, false},
+		{"policy", `{"controlled_connectors":{"protected":true}}`, true},
+		{"null", `{"controlled_connectors":null}`, true},
+		{"array", `{"controlled_connectors":[]}`, true},
+		{"uppercase alias", `{"CONTROLLED_CONNECTORS":{"protected":true}}`, true},
+		{"mixed case alias", `{"Controlled_Connectors":{"protected":true}}`, true},
+		{"escaped alias", `{"controlled\u005fconnectors":{"protected":true}}`, true},
+		{"unicode long-s alias", `{"controlled_connectorſ":{"protected":true}}`, true},
+		{"duplicate policy then empty", `{"controlled_connectors":{"protected":true},"controlled_connectors":{}}`, true},
+		{"duplicate empty then policy", `{"controlled_connectors":{},"controlled_connectors":{"protected":true}}`, true},
+		{"mixed duplicate policy then empty", `{"CONTROLLED_CONNECTORS":{"protected":true},"controlled_connectors":{}}`, true},
+		{"mixed duplicate empty then policy", `{"controlled_connectors":{},"CONTROLLED_CONNECTORS":{"protected":true}}`, true},
+		{"string", `{"controlled_connectors":"invalid"}`, true},
+		{"boolean", `{"controlled_connectors":false}`, true},
+		{"number", `{"controlled_connectors":1}`, true},
+		{"malformed value", `{"controlled_connectors":{"protected":}}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg MCPConfig
+			err := json.Unmarshal([]byte(tc.input), &cfg)
+			if (err != nil) != tc.invalid {
+				t.Fatalf("invalid=%v, got %v", tc.invalid, err)
+			}
+		})
+	}
+}
+
+func TestLighthouseControlledConnectorsReuseRejectsPreexistingPolicy(t *testing.T) {
+	for _, input := range []string{`{}`, `{"controlled_connectors":{}}`} {
+		var cfg MCPConfig
+		oldPolicy := map[string]json.RawMessage{"old": json.RawMessage(`true`)}
+		cfg.ControlledConnectors = oldPolicy
+		if err := json.Unmarshal([]byte(input), &cfg); err == nil {
+			t.Fatalf("json.Unmarshal(%s) unexpectedly accepted a receiver with a pre-existing policy", input)
+		}
+		if len(cfg.ControlledConnectors) != 1 || string(cfg.ControlledConnectors["old"]) != "true" {
+			t.Fatalf("json.Unmarshal(%s) changed pre-existing ControlledConnectors = %#v", input, cfg.ControlledConnectors)
+		}
+	}
+}
+
+func TestMCPConfigToolSyncIntervalDurationCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  time.Duration
+	}{
+		{name: "duration string", input: `{"tool_sync_interval":"10m"}`, want: 10 * time.Minute},
+		{name: "numeric nanoseconds", input: `{"tool_sync_interval":1234}`, want: 1234},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg MCPConfig
+			if err := json.Unmarshal([]byte(tc.input), &cfg); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if cfg.ToolSyncInterval != tc.want {
+				t.Fatalf("ToolSyncInterval = %v, want %v", cfg.ToolSyncInterval, tc.want)
+			}
+		})
 	}
 }
