@@ -1605,7 +1605,7 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		}
 	}
 
-	return schemas.ChatTool{
+	tool := schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
 			Name:        mcpTool.Name,
@@ -1620,6 +1620,21 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		Annotations: annotations,
 		MCP:         toolMetadata(mcpTool),
 	}
+	if mcpTool.OriginalToolJSON != nil {
+		if tool.MCP == nil {
+			tool.MCP = &schemas.MCPToolMetadata{}
+		}
+		tool.MCP.RawDefinition = append(json.RawMessage(nil), mcpTool.OriginalToolJSON...)
+		// Source _meta/output bytes retain integer precision too.
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(mcpTool.OriginalToolJSON, &fields) == nil {
+			tool.MCP.Meta = fields["_meta"]
+			tool.MCP.OutputSchema = fields["outputSchema"]
+			tool.MCP.UIResourceURI, tool.MCP.Visibility = appsUIMeta(tool.MCP.Meta)
+		}
+		tool.MCP.ProjectionFingerprint = schemas.MCPDefinitionFingerprint(tool)
+	}
+	return tool
 }
 
 // toolMetadata is the title, icons and output schema mcpTool declares, or nil when it declares none.

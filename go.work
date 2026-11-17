@@ -1,0 +1,19 @@
+go 1.27.3
+use (
+	./core
+	./framework
+	./transports
+	./plugins/compat
+	./plugins/governance
+	./plugins/jsonparser
+	./plugins/logging
+	./plugins/maxim
+	./plugins/mocker
+	./plugins/modelcatalogresolver
+	./plugins/otel
+	./plugins/prompts
+	./plugins/routing
+	./plugins/semanticcache
+	./plugins/telemetry
+)
+replace github.com/mark3labs/mcp-go => ./third_party/mcp-go

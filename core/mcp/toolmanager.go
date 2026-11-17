@@ -885,7 +885,12 @@ func (m *ToolsManager) executeToolInternal(
 	if strings.TrimSpace(toolCall.Function.Arguments) == "" {
 		arguments = map[string]interface{}{}
 	} else {
-		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+		if !json.Valid([]byte(toolCall.Function.Arguments)) {
+			return nil, "", "", fmt.Errorf("invalid JSON tool arguments for %q", toolName)
+		}
+		decoder := json.NewDecoder(strings.NewReader(toolCall.Function.Arguments))
+		decoder.UseNumber()
+		if err := decoder.Decode(&arguments); err != nil {
 			return nil, "", "", fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
 		}
 	}

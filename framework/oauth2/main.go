@@ -425,7 +425,9 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 	// actually redeemed. The store only commits if that's still the row's
 	// live refresh_token, so a concurrent refresh of the same row (e.g. from
 	// another cluster node) that already won the race is never overwritten.
-	updated, err := p.configStore.RefreshOauthTokenFieldsIfActive(ctx, token.ID, token.RefreshToken, newAccessToken, newRefreshToken, newExpiresAt, now)
+	updated, err := retryOAuthPersistence(ctx, func() (bool, error) {
+		return p.configStore.RefreshOauthTokenFieldsIfActive(ctx, token.ID, token.RefreshToken, newAccessToken, newRefreshToken, newExpiresAt, now)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update token: %w", err)
 	}

@@ -265,3 +265,16 @@ func TestTextBlobToolResult_ReachesProvidersDecoded(t *testing.T) {
 		assert.Equal(t, "Hello", data, "body: %s", body)
 	})
 }
+
+func TestLighthouseDiscoveryFidelity(t *testing.T) {
+	raw := []byte(`{"name":"echo","title":"Echo","inputSchema":{"$ref":"#/$defs/N","$defs":{"N":{"enum":[9007199254740993]}}},"_meta":{"n":9007199254740993},"x-extension":null,"annotations":{"x-extra":true}}`)
+	var upstream mcp.Tool
+	require.NoError(t, json.Unmarshal(raw, &upstream))
+	tool := convertMCPToolToBifrostSchema(&upstream, &MockLogger{})
+	require.JSONEq(t, string(raw), string(tool.MCP.RawDefinition))
+	require.Contains(t, string(tool.MCP.Meta), "9007199254740993")
+	before := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": tool}})
+	cloned := schemas.DeepCopyChatTool(tool)
+	cloned.MCP.RawDefinition = json.RawMessage(`{"name":"echo","inputSchema":{},"x-extension":1}`)
+	require.NotEqual(t, before, computeDiscoveryHash(&schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": cloned}}))
+}

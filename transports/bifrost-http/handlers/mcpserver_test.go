@@ -2358,3 +2358,64 @@ func TestMCPGateway_ServerGivenNamesForPerCallerClients(t *testing.T) {
 		assert.NotEqual(t, "", coremcp.ToolClientName(name), "tools/list carries no server-given name: %q", name)
 	}
 }
+
+func TestLighthouseNativeFidelityAndPluginBoundary(t *testing.T) {
+	raw := json.RawMessage(`{"name":"echo","inputSchema":{"$ref":"#/$defs/N","$defs":{"N":{"enum":[9007199254740993]}}},"_meta":{"n":9007199254740993},"outputSchema":{},"x-extension":null}`)
+	tool := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "client-echo", Description: schemas.Ptr("d")}, MCP: &schemas.MCPToolMetadata{RawDefinition: raw}}
+	tool.MCP.ProjectionFingerprint = schemas.MCPDefinitionFingerprint(tool)
+	b, err := json.Marshal(gatewayTool(tool))
+	require.NoError(t, err)
+	require.Contains(t, string(b), "9007199254740993")
+	require.Contains(t, string(b), `"name":"client-echo"`)
+	require.Contains(t, string(b), `"x-extension":null`)
+	for _, modify := range []func(*schemas.ChatTool){
+		func(t *schemas.ChatTool) { t.Function.Description = schemas.Ptr("new") },
+		func(t *schemas.ChatTool) { t.Function.Strict = schemas.Ptr(true) },
+		func(t *schemas.ChatTool) { t.Function.Parameters = &schemas.ToolFunctionParameters{Type: "string"} },
+		func(t *schemas.ChatTool) {
+			t.Annotations = &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(false)}
+		},
+		func(t *schemas.ChatTool) { t.MCP.Visibility = []string{"app"} },
+	} {
+		cloned := schemas.DeepCopyChatTool(tool)
+		modify(&cloned)
+		_, err = json.Marshal(gatewayTool(cloned))
+		require.ErrorContains(t, err, "projection conflict")
+	}
+}
+
+func TestLighthouseNativeArgumentPrecisionAndEdits(t *testing.T) {
+	var request mcp.CallToolRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"params":{"name":"echo","arguments":{"id":9007199254740993}}}`), &request))
+	b, err := lighthouseToolArguments(request)
+	require.NoError(t, err)
+	require.Contains(t, string(b), "9007199254740993")
+	request.Params.Arguments = map[string]any{"id": "filtered"}
+	b, err = lighthouseToolArguments(request)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"id":"filtered"}`, string(b))
+}
+
+func BenchmarkLighthouseGatewayFidelity(b *testing.B) {
+	raw := json.RawMessage(`{"name":"echo","inputSchema":{"$ref":"#/$defs/N","$defs":{"N":{"enum":[9007199254740993]}}},"_meta":{"n":9007199254740993}}`)
+	for _, carry := range []bool{false, true} {
+		name := "typed-only"
+		if carry {
+			name = "raw-fidelity"
+		}
+		b.Run(name, func(b *testing.B) {
+			tool := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "client-echo"}}
+			if carry {
+				tool.MCP = &schemas.MCPToolMetadata{RawDefinition: raw}
+				tool.MCP.ProjectionFingerprint = schemas.MCPDefinitionFingerprint(tool)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, err := json.Marshal(gatewayTool(tool)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
